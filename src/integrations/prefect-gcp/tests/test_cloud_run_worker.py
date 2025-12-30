@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from unittest import mock
 from unittest.mock import Mock
 
 import pydantic
@@ -841,3 +842,55 @@ class TestCloudRunWorker:
             calls = list_mock_calls(mock_client, 2)
             for call, expected_call in zip(calls, expected_calls):
                 assert call.startswith(expected_call)
+
+
+class TestCloudRunWorkerKillInfrastructure:
+    """Tests for CloudRunWorker.kill_infrastructure method."""
+
+    async def test_kill_infrastructure_deletes_job(
+        self, mock_client, cloud_run_worker_job_config
+    ):
+        """Test that kill_infrastructure successfully deletes a Cloud Run job."""
+        job_name = "test-job-name"
+
+        with mock.patch("prefect_gcp.workers.cloud_run.Job.delete") as mock_delete:
+            async with CloudRunWorker("my-work-pool") as worker:
+                await worker.kill_infrastructure(
+                    infrastructure_pid=job_name,
+                    configuration=cloud_run_worker_job_config,
+                    grace_seconds=30,
+                )
+
+            mock_delete.assert_called_once_with(
+                client=mock_client,
+                namespace=cloud_run_worker_job_config.project,
+                job_name=job_name,
+            )
+
+    async def test_kill_infrastructure_raises_not_found(
+        self, mock_client, cloud_run_worker_job_config
+    ):
+        """Test that kill_infrastructure raises InfrastructureNotFound for missing job."""
+        import googleapiclient.errors
+
+        from prefect.exceptions import InfrastructureNotFound
+
+        job_name = "nonexistent-job"
+
+        # Create a proper mock response with status attribute
+        mock_resp = Mock()
+        mock_resp.status = 404
+        mock_http_error = googleapiclient.errors.HttpError(
+            resp=mock_resp, content=b"Not found"
+        )
+
+        with mock.patch(
+            "prefect_gcp.workers.cloud_run.Job.delete", side_effect=mock_http_error
+        ):
+            async with CloudRunWorker("my-work-pool") as worker:
+                with pytest.raises(InfrastructureNotFound):
+                    await worker.kill_infrastructure(
+                        infrastructure_pid=job_name,
+                        configuration=cloud_run_worker_job_config,
+                        grace_seconds=30,
+                    )

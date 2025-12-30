@@ -1085,3 +1085,63 @@ async def test_sql_uses_bind_parameters_for_all_user_inputs(
     assert "eai1" in params
     assert "eai2" in params
     assert "eai3" in params
+
+
+class TestSPCSWorkerKillInfrastructure:
+    """Tests for SPCSWorker.kill_infrastructure method."""
+
+    async def test_kill_infrastructure_drops_service(
+        self,
+        snowflake_credentials,
+        worker_flow_run,
+        mock_snowflake_root,
+    ):
+        """Test that kill_infrastructure successfully drops a SPCS service."""
+        config = await create_job_configuration(snowflake_credentials, worker_flow_run)
+        job_service_name = "test-service"
+
+        mock_service = MagicMock()
+        mock_service.drop = MagicMock()
+        mock_snowflake_root.databases["common"].schemas["compute"].services[
+            job_service_name
+        ] = mock_service
+        mock_snowflake_root.databases["common"].schemas[
+            "compute"
+        ].services.__getitem__ = MagicMock(return_value=mock_service)
+
+        async with SPCSWorker(work_pool_name="test-pool") as worker:
+            await worker.kill_infrastructure(
+                infrastructure_pid=job_service_name,
+                configuration=config,
+                grace_seconds=30,
+            )
+
+        mock_service.drop.assert_called_once()
+
+    async def test_kill_infrastructure_raises_not_found(
+        self,
+        snowflake_credentials,
+        worker_flow_run,
+        mock_snowflake_root,
+    ):
+        """Test that kill_infrastructure raises InfrastructureNotFound for missing service."""
+        from snowflake.core.exceptions import NotFoundError
+
+        from prefect.exceptions import InfrastructureNotFound
+
+        config = await create_job_configuration(snowflake_credentials, worker_flow_run)
+        job_service_name = "nonexistent-service"
+
+        mock_service = MagicMock()
+        mock_service.drop = MagicMock(side_effect=NotFoundError("Service not found"))
+        mock_snowflake_root.databases["common"].schemas[
+            "compute"
+        ].services.__getitem__ = MagicMock(return_value=mock_service)
+
+        async with SPCSWorker(work_pool_name="test-pool") as worker:
+            with pytest.raises(InfrastructureNotFound):
+                await worker.kill_infrastructure(
+                    infrastructure_pid=job_service_name,
+                    configuration=config,
+                    grace_seconds=30,
+                )

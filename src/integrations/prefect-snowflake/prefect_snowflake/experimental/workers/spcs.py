@@ -26,6 +26,7 @@ from snowflake.core.service import (
 )
 
 from prefect.client.schemas.objects import FlowRun
+from prefect.exceptions import InfrastructureNotFound
 from prefect.utilities.asyncutils import run_sync_in_worker_thread
 from prefect.utilities.dockerutils import get_prefect_image_name
 from prefect.workers.base import (
@@ -784,3 +785,58 @@ class SPCSWorker(BaseWorker):
                 )
 
         return last_written_time
+
+    async def kill_infrastructure(
+        self,
+        infrastructure_pid: str,
+        configuration: SPCSWorkerConfiguration,
+        grace_seconds: int = 30,
+    ) -> None:
+        """
+        Kill a Snowpark Container Services job by dropping the service.
+
+        Args:
+            infrastructure_pid: The service name.
+            configuration: The configuration used to connect to Snowflake.
+            grace_seconds: Not used for SPCS (Snowflake handles graceful shutdown).
+
+        Raises:
+            InfrastructureNotFound: If the service doesn't exist.
+        """
+        job_service_name = infrastructure_pid
+
+        await run_sync_in_worker_thread(
+            self._drop_service, job_service_name, configuration
+        )
+
+    def _drop_service(
+        self, job_service_name: str, configuration: SPCSWorkerConfiguration
+    ) -> None:
+        """
+        Drop a Snowpark Container Services job service.
+
+        Args:
+            job_service_name: The name of the service to drop.
+            configuration: The configuration used to connect to Snowflake.
+
+        Raises:
+            InfrastructureNotFound: If the service doesn't exist.
+        """
+        [database, schema, _] = configuration.compute_pool.split(".")
+
+        connection_parameters = self._get_snowflake_connection_parameters(configuration)
+
+        with snowflake.connector.connect(**connection_parameters) as session:
+            root = Root(session)
+            services = root.databases[database].schemas[schema].services
+
+            try:
+                service = services[job_service_name]
+                service.drop()
+                self._logger.info(
+                    f"Dropped SPCS service {job_service_name!r} in {database}.{schema}"
+                )
+            except NotFoundError:
+                raise InfrastructureNotFound(
+                    f"SPCS service {job_service_name!r} not found in {database}.{schema}"
+                )

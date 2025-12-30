@@ -2736,3 +2736,81 @@ async def test_run_task_with_both_secrets(
         for env in task["overrides"]["containerOverrides"][0]["environment"]
         if env["name"] in ["PREFECT_API_KEY", "PREFECT_API_AUTH_STRING"]
     )
+
+
+class TestECSWorkerKillInfrastructure:
+    """Tests for ECSWorker.kill_infrastructure method."""
+
+    @pytest.mark.usefixtures("ecs_mocks")
+    async def test_kill_infrastructure_stops_task(self, aws_credentials, flow_run):
+        """Test that kill_infrastructure successfully stops an ECS task."""
+        session = aws_credentials.get_boto3_session()
+        ecs_client = session.client("ecs")
+
+        # Register task definition and run a task
+        ecs_client.register_task_definition(**TEST_TASK_DEFINITION)
+
+        response = ecs_client.run_task(
+            cluster="default",
+            taskDefinition="prefect",
+            launchType="FARGATE",
+            networkConfiguration={
+                "awsvpcConfiguration": {
+                    "subnets": ["subnet-12345"],
+                    "securityGroups": ["sg-12345"],
+                }
+            },
+        )
+        task_arn = response["tasks"][0]["taskArn"]
+        infrastructure_pid = f"default::{task_arn}"
+
+        configuration = await construct_configuration(aws_credentials=aws_credentials)
+        configuration.prepare_for_flow_run(flow_run)
+
+        async with ECSWorker(work_pool_name="test") as worker:
+            await worker.kill_infrastructure(
+                infrastructure_pid=infrastructure_pid,
+                configuration=configuration,
+                grace_seconds=30,
+            )
+
+        # Verify task was stopped
+        tasks = ecs_client.describe_tasks(cluster="default", tasks=[task_arn])
+        assert tasks["tasks"][0]["lastStatus"] in ["STOPPED", "DEPROVISIONING"]
+
+    @pytest.mark.usefixtures("ecs_mocks")
+    async def test_kill_infrastructure_raises_not_found(
+        self, aws_credentials, flow_run
+    ):
+        """Test that kill_infrastructure raises InfrastructureNotFound for non-existent task."""
+        from unittest.mock import MagicMock, patch
+
+        from prefect.exceptions import InfrastructureNotFound
+
+        fake_task_arn = "arn:aws:ecs:us-east-1:123456789012:task/default/fake-task-id"
+        infrastructure_pid = f"default::{fake_task_arn}"
+
+        configuration = await construct_configuration(aws_credentials=aws_credentials)
+        configuration.prepare_for_flow_run(flow_run)
+
+        # Create a mock ECS client that raises InvalidParameterException
+        mock_ecs_client = MagicMock()
+        mock_ecs_client.exceptions.InvalidParameterException = type(
+            "InvalidParameterException", (Exception,), {}
+        )
+        mock_ecs_client.stop_task.side_effect = (
+            mock_ecs_client.exceptions.InvalidParameterException(
+                "The task was not found."
+            )
+        )
+
+        with patch.object(
+            configuration.aws_credentials, "get_client", return_value=mock_ecs_client
+        ):
+            async with ECSWorker(work_pool_name="test") as worker:
+                with pytest.raises(InfrastructureNotFound):
+                    await worker.kill_infrastructure(
+                        infrastructure_pid=infrastructure_pid,
+                        configuration=configuration,
+                        grace_seconds=30,
+                    )

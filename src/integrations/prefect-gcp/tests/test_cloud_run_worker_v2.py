@@ -398,3 +398,80 @@ class TestCloudRunWorkerJobV2Configuration:
                 "secretKeyRef": {"secret": "prefect-auth-string", "version": "latest"}
             },
         } in env_vars
+
+
+class TestCloudRunWorkerV2KillInfrastructure:
+    """Tests for CloudRunWorkerV2.kill_infrastructure method."""
+
+    async def test_kill_infrastructure_deletes_job(
+        self, cloud_run_worker_v2_job_config, mock_credentials
+    ):
+        """Test that kill_infrastructure successfully deletes a Cloud Run V2 job."""
+        from unittest import mock
+        from unittest.mock import MagicMock
+
+        from prefect_gcp.workers.cloud_run_v2 import CloudRunWorkerV2
+
+        job_name = "test-job-name"
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = lambda self: mock_client
+        mock_client.__exit__ = lambda self, *args: None
+
+        with mock.patch.object(
+            CloudRunWorkerV2, "_get_client", return_value=mock_client
+        ):
+            with mock.patch(
+                "prefect_gcp.workers.cloud_run_v2.JobV2.delete"
+            ) as mock_delete:
+                async with CloudRunWorkerV2("my-work-pool") as worker:
+                    await worker.kill_infrastructure(
+                        infrastructure_pid=job_name,
+                        configuration=cloud_run_worker_v2_job_config,
+                        grace_seconds=30,
+                    )
+
+                mock_delete.assert_called_once_with(
+                    cr_client=mock_client,
+                    project=cloud_run_worker_v2_job_config.project,
+                    location=cloud_run_worker_v2_job_config.region,
+                    job_name=job_name,
+                )
+
+    async def test_kill_infrastructure_raises_not_found(
+        self, cloud_run_worker_v2_job_config, mock_credentials
+    ):
+        """Test that kill_infrastructure raises InfrastructureNotFound for missing job."""
+        from unittest import mock
+        from unittest.mock import MagicMock
+
+        from googleapiclient.errors import HttpError
+        from prefect_gcp.workers.cloud_run_v2 import CloudRunWorkerV2
+
+        from prefect.exceptions import InfrastructureNotFound
+
+        job_name = "nonexistent-job"
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = lambda self: mock_client
+        mock_client.__exit__ = lambda self, *args: None
+
+        # Create a proper mock response with status attribute
+        mock_resp = MagicMock()
+        mock_resp.status = 404
+        mock_http_error = HttpError(resp=mock_resp, content=b"Not found")
+
+        with mock.patch.object(
+            CloudRunWorkerV2, "_get_client", return_value=mock_client
+        ):
+            with mock.patch(
+                "prefect_gcp.workers.cloud_run_v2.JobV2.delete",
+                side_effect=mock_http_error,
+            ):
+                async with CloudRunWorkerV2("my-work-pool") as worker:
+                    with pytest.raises(InfrastructureNotFound):
+                        await worker.kill_infrastructure(
+                            infrastructure_pid=job_name,
+                            configuration=cloud_run_worker_v2_job_config,
+                            grace_seconds=30,
+                        )
