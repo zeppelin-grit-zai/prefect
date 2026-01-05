@@ -14,7 +14,7 @@ from prefect.testing.utilities import prefect_test_harness
 
 @pytest.fixture(scope="session", autouse=True)
 def prefect_db():
-    with prefect_test_harness():
+    with prefect_test_harness(server_startup_timeout=60):
         yield
 
 
