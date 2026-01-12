@@ -87,6 +87,20 @@ class TestCheckAuthentication:
         assert "Not authenticated" in str(exc_info.value)
 
     @pytest.mark.anyio
+    async def test_authentication_failure_forbidden(self) -> None:
+        """Forbidden error raises AuthenticationError."""
+        client = AsyncMock()
+        client.api_healthcheck = AsyncMock(
+            return_value=Exception("403 Forbidden: Access denied")
+        )
+        client.api_url = "https://api.prefect.cloud"
+
+        with pytest.raises(AuthenticationError) as exc_info:
+            await _check_authentication(client)
+
+        assert "Not authenticated" in str(exc_info.value)
+
+    @pytest.mark.anyio
     async def test_authentication_failure_connection_error(self) -> None:
         """Connection error raises APIConnectionError."""
         client = AsyncMock()
